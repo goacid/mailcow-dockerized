@@ -1,0 +1,45 @@
+version: '2.4'
+
+services:
+    haproxy:
+      #build: ./data/Dockerfiles/haproxy
+      image: goacid/haproxy:2.1.4
+      environment:
+        - TZ=${TZ}
+      restart: always
+      ports:
+        - "172.22.1.1:993:993"
+        - "172.22.1.1:143:143"
+        - "172.22.1.1:110:110"
+        - "172.22.1.1:995:995"
+        - "172.22.1.1:4190:4190"
+        - "172.22.1.1:25:25"
+        - "172.22.1.1:465:465"
+        - "172.22.1.1:587:587"
+        - "172.22.1.1:60668:60668"
+        - "188.165.238.81:993:993"
+        - "188.165.238.81:143:143"
+        - "188.165.238.81:110:110"
+        - "188.165.238.81:995:995"
+        - "188.165.238.81:4190:4190"
+        - "188.165.238.81:25:25"
+        - "188.165.238.81:465:465"
+        - "188.165.238.81:587:587"
+        - "188.165.238.81:60668:60668"
+
+      volumes:
+        - /data/docker/static_data/kurty_compose/letsencrypt:/etc/letsencrypt:rw
+        - /data/docker/static_data/kurty_compose/mailcow/haproxy:/etc/haproxy/:rw
+        - /data/docker/static_data/kurty_compose/haproxy/certs:/etc/haproxy/certs:ro
+
+      networks:
+        mailcow-network:
+          ipv4_address: 172.22.1.100
+          ipv6_address: 2001:41d0:2:b951:11::100
+          aliases:
+            - mailcow_haproxy
+        default:
+          ipv4_address: 172.16.200.253
+          ipv6_address: 2001:41d0:2:b951:10::253
+          aliases:
+            - mhaproxy
