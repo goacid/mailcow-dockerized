@@ -97,7 +97,7 @@ services:
         - ./data/conf/rspamd/lua/:/etc/rspamd/lua/:ro
         - ./data/conf/rspamd/rspamd.conf.local:/etc/rspamd/rspamd.conf.local
         - ./data/conf/rspamd/rspamd.conf.override:/etc/rspamd/rspamd.conf.override
-        - ./data/conf/rspamd/settings.conf:/etc/rspamd/settings.conf
+        #- ./data/conf/rspamd/settings.conf:/etc/rspamd/settings.conf
         - /data/docker/static_data/kurty_compose/mailcow/dkim:/data/dkim
         - /data/docker/static_data/kurty_compose/mailcow/rspamd:/var/lib/rspamd
       restart: always
