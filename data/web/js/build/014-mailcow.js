@@ -147,6 +147,12 @@ $(document).ready(function() {
         event.preventDefault();
       });
     }
+    if ($(this).is("select")) {
+      $(this).selectpicker('destroy');
+      $(this).replaceWith(function() { 
+        return '<label class="control-label"><b>' + this.innerText + '</b></label>'; 
+      });
+    }
     if ($(this).hasClass('btn-group')) {
       $(this).find('a').each(function(){
         $(this).removeClass('dropdown-toggle')
@@ -183,6 +189,8 @@ $(document).ready(function() {
       $(this).attr("disabled", true);
     } else if ($(this).attr('data-provide') == 'slider') {
       $(this).slider("disable");
+    } else if ($(this).is(':checkbox')) {
+      $(this).attr("disabled", true);
     }
     $(this).data("toggle", "tooltip");
     $(this).attr("title", lang_acl.prohibited);
