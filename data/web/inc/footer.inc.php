@@ -79,6 +79,7 @@ $(document).ready(function() {
     foreach($alertbox_log_parser as $log) {
       $alerts[$log['type']][] = $log['msg'];
     }
+    $alerts = array_filter(array_unique($alerts));
     foreach($alerts as $alert_type => $alert_msg) {
   ?>
   mailcow_alert_box(<?=json_encode(implode('<hr class="alert-hr">', $alert_msg));?>, <?=$alert_type;?>);
@@ -93,7 +94,7 @@ $(document).ready(function() {
     backdrop: 'static',
     keyboard: false
   });
-  $('#u2f_status_auth').html('<p><span class="glyphicon glyphicon-refresh glyphicon-spin"></span> ' + lang_tfa.init_u2f + '</p>');
+  $('#u2f_status_auth').html('<p><i class="bi bi-arrow-repeat icon-spin"></i> ' + lang_tfa.init_u2f + '</p>');
   $('#ConfirmTFAModal').on('shown.bs.modal', function(){
       $(this).find('input[name=token]').focus();
       // If U2F
@@ -175,12 +176,15 @@ $(document).ready(function() {
     });
   });
   // Set TFA/FIDO2
-  $("#register-fido2").click(function(){
+  $("#register-fido2, #register-fido2-touchid").click(function(){
+	let t = $(this);
+	  
     $("option:selected").prop("selected", false);
     if (!window.fetch || !navigator.credentials || !navigator.credentials.create) {
         window.alert('Browser not supported.');
         return;
     }
+    
     window.fetch("/api/v1/get/fido2-registration/<?= (isset($_SESSION['mailcow_cc_username'])) ? rawurlencode($_SESSION['mailcow_cc_username']) : null; ?>", {method:'GET',cache:'no-cache'}).then(function(response) {
       return response.json();
     }).then(function(json) {
@@ -188,6 +192,13 @@ $(document).ready(function() {
         throw new Error(json.msg);
       }
       recursiveBase64StrToArrayBuffer(json);
+      
+      // set attestation to node if we are registering apple touch id
+      if(t.attr('id') === 'register-fido2-touchid') {
+        json.publicKey.attestation = 'none';
+        json.publicKey.authenticatorSelection.authenticatorAttachment = "platform";
+      }
+      
       return json;
     }).then(function(createCredentialArgs) {
       console.log(createCredentialArgs);
@@ -235,7 +246,7 @@ $(document).ready(function() {
       $("#start_u2f_register").click(function(){
         $('#u2f_return_code').html('');
         $('#u2f_return_code').hide();
-        $('#u2f_status_reg').html('<p><span class="glyphicon glyphicon-refresh glyphicon-spin"></span> ' + lang_tfa.init_u2f + '</p>');
+        $('#u2f_status_reg').html('<p><i class="bi bi-arrow-repeat icon-spin"></i> ' + lang_tfa.init_u2f + '</p>');
         $.ajax({
           type: "GET",
           cache: false,
@@ -304,5 +315,12 @@ $(document).ready(function() {
 </body>
 </html>
 <?php
+if (isset($_SESSION['mailcow_cc_api'])) {
+  session_regenerate_id(true);
+  session_unset();
+  session_destroy();
+  session_write_close();
+  header("Location: /");
+}
 $stmt = null;
 $pdo = null;
