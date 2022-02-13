@@ -202,6 +202,11 @@ legend {
   margin-top: 27px;
   margin-bottom: 20px;
   color: #959595;
+  display: flex;
+  flex-direction: column;
+}
+.footer .version {
+    margin-left: auto;
 }
 .slave-info {
   padding: 15px 0px 15px 15px;
@@ -243,4 +248,10 @@ legend > [class^="bi-"]::before, legend > [class*=" bi-"]::before {
 }
 code {
   font-size: inherit;
+}
+.bootstrap-select.btn-group.show-tick .dropdown-menu li.selected a span.check-mark {
+  margin-top: 0px;
+}
+.flag-icon {
+  margin-right: 5px;
 }

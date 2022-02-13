@@ -12,8 +12,8 @@ if [[ "$(uname -r)" =~ ^4\.4\. ]]; then
   if grep -q Ubuntu <<< $(uname -a); then
     echo "DO NOT RUN mailcow ON THIS UBUNTU KERNEL!";
     echo "Please update to linux-generic-hwe-16.04 by running \"apt-get install --install-recommends linux-generic-hwe-16.04\""
+    exit 1
   fi
-  exit 1
 fi
 
 if grep --help 2>&1 | grep -q -i "busybox"; then
@@ -287,6 +287,9 @@ WATCHDOG_NOTIFY_BAN=n
 # Will only work with unmodified mailcow setups.
 WATCHDOG_EXTERNAL_CHECKS=n
 
+# Enable watchdog verbose logging
+WATCHDOG_VERBOSE=n
+
 # Max log lines per service to keep in Redis logs
 
 LOG_LINES=9999
@@ -338,8 +341,13 @@ DOVECOT_MASTER_PASS=
 # Optional: Leave empty for none
 # This value is only used on first order!
 # Setting it at a later point will require the following steps:
-# https://mailcow.github.io/mailcow-dockerized-docs/debug-reset-tls/
+# https://mailcow.github.io/mailcow-dockerized-docs/debug-reset_tls/
 ACME_CONTACT=
+
+# WebAuthn device manufacturer verification
+# After setting WEBAUTHN_ONLY_TRUSTED_VENDORS=y only devices from trusted manufacturers are allowed
+# root certificates can be placed for validation under mailcow-dockerized/data/web/inc/lib/WebAuthn/rootCertificates
+WEBAUTHN_ONLY_TRUSTED_VENDORS=n
 
 EOF
 
@@ -353,3 +361,19 @@ echo "Generating snake-oil certificate..."
 openssl req -x509 -newkey rsa:4096 -keyout data/assets/ssl-example/key.pem -out data/assets/ssl-example/cert.pem -days 365 -subj "/C=DE/ST=NRW/L=Willich/O=mailcow/OU=mailcow/CN=${MAILCOW_HOSTNAME}" -sha256 -nodes
 echo "Copying snake-oil certificate..."
 cp -n -d data/assets/ssl-example/*.pem data/assets/ssl/
+
+# Set app_info.inc.php
+mailcow_git_version=$(git describe --tags `git rev-list --tags --max-count=1`)
+if [ $? -eq 0 ]; then
+  mailcow_git_url=$(git config --get remote.origin.url)
+  echo '<?php' > data/web/inc/app_info.inc.php
+  echo '  $MAILCOW_GIT_VERSION="'$mailcow_git_version'";' >> data/web/inc/app_info.inc.php
+  echo '  $MAILCOW_GIT_URL="'$mailcow_git_url'";' >> data/web/inc/app_info.inc.php
+  echo '?>' >> data/web/inc/app_info.inc.php
+else
+  echo '<?php' > data/web/inc/app_info.inc.php
+  echo '  $MAILCOW_GIT_VERSION="";' >> data/web/inc/app_info.inc.php
+  echo '  $MAILCOW_GIT_URL="";' >> data/web/inc/app_info.inc.php
+  echo '?>' >> data/web/inc/app_info.inc.php
+  echo -e "\e[33mCannot determine current git repository version...\e[0m"
+fi

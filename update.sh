@@ -46,7 +46,7 @@ done
 
 export LC_ALL=C
 DATE=$(date +%Y-%m-%d_%H_%M_%S)
-BRANCH=$(git rev-parse --abbrev-ref HEAD)
+BRANCH=$(cd ${SCRIPT_DIR}; git rev-parse --abbrev-ref HEAD)
 
 check_online_status() {
   CHECK_ONLINE_IPS=(1.1.1.1 9.9.9.9 8.8.8.8)
@@ -79,7 +79,7 @@ prefetch_images() {
 
 docker_garbage() {
   IMGS_TO_DELETE=()
-  for container in $(grep -oP "image: \Kmailcow.+" docker-compose.yml); do
+  for container in $(grep -oP "image: \Kmailcow.+" "${SCRIPT_DIR}/docker-compose.yml"); do
     REPOSITORY=${container/:*}
     TAG=${container/*:}
     V_MAIN=${container/*.}
@@ -121,9 +121,9 @@ docker_garbage() {
       echo "Running image removal without extra confirmation due to force mode."
       docker rmi ${IMGS_TO_DELETE[*]}
     fi
+    echo -e "\e[32mFurther cleanup...\e[0m"
+    echo "If you want to cleanup further garbage collected by Docker, please make sure all containers are up and running before cleaning your system by executing \"docker system prune\""
   fi
-  echo -e "\e[32mFurther cleanup...\e[0m"
-  echo "If you want to cleanup further garbage collected by Docker, please make sure all containers are up and running before cleaning your system by executing \"docker system prune\""
 }
 
 in_array() {
@@ -232,7 +232,7 @@ while (($#)); do
       exit 0
     ;;
     -f|--force)
-      echo -e "\e[32mForcing Update...\e[0m"
+      echo -e "\e[32mRunning in forced mode...\e[0m"
       FORCE=y
     ;;
     --no-update-compose)
@@ -306,6 +306,8 @@ CONFIG_ARRAY=(
   "MAILCOW_PASS_SCHEME"
   "ADDITIONAL_SERVER_NAMES"
   "ACME_CONTACT"
+  "WATCHDOG_VERBOSE"
+  "WEBAUTHN_ONLY_TRUSTED_VENDORS"
 )
 
 sed -i --follow-symlinks '$a\' mailcow.conf
@@ -513,6 +515,18 @@ for option in ${CONFIG_ARRAY[@]}; do
       echo '# https://mailcow.github.io/mailcow-dockerized-docs/debug-reset-tls/' >> mailcow.conf
       echo 'ACME_CONTACT=' >> mailcow.conf
   fi
+  elif [[ ${option} == "WEBAUTHN_ONLY_TRUSTED_VENDORS" ]]; then
+    if ! grep -q ${option} mailcow.conf; then
+      echo "# WebAuthn device manufacturer verification" >> mailcow.conf
+      echo '# After setting WEBAUTHN_ONLY_TRUSTED_VENDORS=y only devices from trusted manufacturers are allowed' >> mailcow.conf
+      echo '# root certificates can be placed for validation under mailcow-dockerized/data/web/inc/lib/WebAuthn/rootCertificates' >> mailcow.conf
+      echo 'WEBAUTHN_ONLY_TRUSTED_VENDORS=n' >> mailcow.conf
+    fi
+elif [[ ${option} == "WATCHDOG_VERBOSE" ]]; then
+    if ! grep -q ${option} mailcow.conf; then
+      echo '# Enable watchdog verbose logging' >> mailcow.conf
+      echo 'WATCHDOG_VERBOSE=n' >> mailcow.conf
+  fi
   elif ! grep -q ${option} mailcow.conf; then
     echo "Adding new option \"${option}\" to mailcow.conf"
     echo "${option}=n" >> mailcow.conf
@@ -703,6 +717,22 @@ if [ -f "data/conf/rspamd/local.d/metrics.conf" ]; then
     echo "The deprecated configuration file metrics.conf will be moved to metrics.conf_deprecated after updating mailcow."
   fi
   mv data/conf/rspamd/local.d/metrics.conf data/conf/rspamd/local.d/metrics.conf_deprecated
+fi
+
+# Set app_info.inc.php
+mailcow_git_version=$(git describe --tags `git rev-list --tags --max-count=1`)
+if [ $? -eq 0 ]; then
+  mailcow_git_url=$(git config --get remote.origin.url)
+  echo '<?php' > data/web/inc/app_info.inc.php
+  echo '  $MAILCOW_GIT_VERSION="'$mailcow_git_version'";' >> data/web/inc/app_info.inc.php
+  echo '  $MAILCOW_GIT_URL="'$mailcow_git_url'";' >> data/web/inc/app_info.inc.php
+  echo '?>' >> data/web/inc/app_info.inc.php
+else
+  echo '<?php' > data/web/inc/app_info.inc.php
+  echo '  $MAILCOW_GIT_VERSION="";' >> data/web/inc/app_info.inc.php
+  echo '  $MAILCOW_GIT_URL="";' >> data/web/inc/app_info.inc.php
+  echo '?>' >> data/web/inc/app_info.inc.php
+  echo -e "\e[33mCannot determine current git repository version...\e[0m"
 fi
 
 if [[ ${SKIP_START} == "y" ]]; then
