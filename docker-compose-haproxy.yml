@@ -30,7 +30,7 @@ services:
       volumes:
         - /data/docker/static_data/kurty_compose/letsencrypt:/etc/letsencrypt:rw
         - /data/docker/static_data/kurty_compose/mailcow/haproxy:/etc/haproxy/:rw
-        - /data/docker/static_data/kurty_compose/haproxy/certs:/etc/haproxy/certs:ro
+        - /data/docker/static_data/kurty_compose/haproxy/current/certs:/etc/haproxy/certs:ro
 
       networks:
         mailcow-network:

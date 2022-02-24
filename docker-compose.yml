@@ -232,8 +232,10 @@ services:
         - NET_BIND_SERVICE
       volumes:
         - ./data/hooks/dovecot:/hooks:Z
-        - /data/docker/static_data/kurty_compose/letsencrypt/live/mail2.kurty.net/fullchain.pem:/etc/ssl/mail/cert.pem:ro
-        - /data/docker/static_data/kurty_compose/letsencrypt/live/mail2.kurty.net/privkey.pem:/etc/ssl/mail/key.pem:ro
+        #- /data/docker/static_data/kurty_compose/letsencrypt/live/mail2.kurty.net/fullchain.pem:/etc/ssl/mail/cert.pem:ro
+        - /data/docker/static_data/kurty_compose/haproxy/certs/kurty.net.full:/etc/ssl/mail/cert.pem:ro
+        #- /data/docker/static_data/kurty_compose/letsencrypt/live/mail2.kurty.net/privkey.pem:/etc/ssl/mail/key.pem:ro
+        - /data/docker/static_data/kurty_compose/haproxy/certs/kurty.net.key:/etc/ssl/mail/key.pem:ro
         - /data/docker/static_data/kurty_compose/mailcow/dovecot/dhparam.pem:/etc/ssl/mail/dhparams.pem
         - ./data/conf/dovecot:/etc/dovecot:z
         #- ./data/assets/ssl:/etc/ssl/mail/:ro,z
@@ -314,8 +316,10 @@ services:
         - ./data/hooks/postfix:/hooks:Z
         - ./data/conf/postfix:/opt/postfix/conf:z
         #- ./data/assets/ssl:/etc/ssl/mail/:ro
-        - /data/docker/static_data/kurty_compose/letsencrypt/live/mail2.kurty.net/fullchain.pem:/etc/ssl/mail/cert.pem:ro,z
-        - /data/docker/static_data/kurty_compose/letsencrypt/live/mail2.kurty.net/privkey.pem:/etc/ssl/mail/key.pem:ro,z
+        #- /data/docker/static_data/kurty_compose/letsencrypt/live/mail2.kurty.net/fullchain.pem:/etc/ssl/mail/cert.pem:ro,z
+        - /data/docker/static_data/kurty_compose/haproxy/certs/kurty.net.full:/etc/ssl/mail/cert.pem:ro,z
+        #- /data/docker/static_data/kurty_compose/letsencrypt/live/mail2.kurty.net/privkey.pem:/etc/ssl/mail/key.pem:ro,z
+        - /data/docker/static_data/kurty_compose/haproxy/certs/kurty.net.key:/etc/ssl/mail/key.pem:ro,z
         - /data/docker/static_data/kurty_compose/mailcow/postfix/spool:/var/spool/postfix:z
         - /data/docker/static_data/kurty_compose/mailcow/postfix/log/:/var/log/:z
         - /data/docker/static_data/kurty_compose/mailcow/crypt:/var/lib/zeyple:z
