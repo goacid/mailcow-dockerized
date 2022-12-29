@@ -13,7 +13,7 @@ services:
       networks:
         mailcow-network:
           ipv4_address: ${IPV4_NETWORK:-172.22.1}.254
-          ipv6_address: 2001:41d0:2:b951:11::254
+          ipv6_address: ${IPV6_NETWORK}:254
           aliases:
             - mailcow_unbound
             - unbound
