@@ -2,7 +2,7 @@ version: '2.4'
 services:
 
     unbound-mailcow:
-      image: mailcow/unbound:1.15
+      image: mailcow/unbound:1.17
       environment:
         - TZ=${TZ}
       volumes:
@@ -47,7 +47,7 @@ services:
             - mysql
 
     redis-mailcow:
-      image: redis:6-alpine
+      image: redis:7-alpine
       volumes:
         - /data/docker/static_data/kurty_compose/mailcow/redis:/data/:Z
       restart: always
@@ -64,8 +64,10 @@ services:
             - redis
 
     clamd-mailcow:
-      image: mailcow/clamd:1.43
+      image: mailcow/clamd:1.60
       restart: always
+      depends_on:
+        - unbound-mailcow
       dns:
         - ${IPV4_NETWORK:-172.22.1}.254
       environment:
@@ -73,6 +75,7 @@ services:
         - SKIP_CLAMD=${SKIP_CLAMD:-n}
       volumes:
         - ./data/conf/clamav/:/etc/clamav/:Z
+        - clamd-db-vol-1:/var/lib/clamav
       networks:
         mailcow-network:
           aliases:
@@ -80,7 +83,7 @@ services:
             - clamd
 
     rspamd-mailcow:
-      image: mailcow/rspamd:1.79
+      image: mailcow/rspamd:1.92
       stop_grace_period: 30s
       depends_on:
         - dovecot-mailcow
@@ -112,7 +115,7 @@ services:
             - rspamd
 
     php-fpm-mailcow:
-      image: mailcow/phpfpm:1.78
+      image: mailcow/phpfpm:1.81
       command: "php-fpm -d date.timezone=${TZ} -d expose_php=0"
       depends_on:
         - redis-mailcow
@@ -166,6 +169,7 @@ services:
         - ALLOW_ADMIN_EMAIL_LOGIN=${ALLOW_ADMIN_EMAIL_LOGIN:-n}
         - MASTER=${MASTER:-y}
         - DEV_MODE=${DEV_MODE:-n}
+        - DEMO_MODE=${DEMO_MODE:-n}
         - WEBAUTHN_ONLY_TRUSTED_VENDORS=${WEBAUTHN_ONLY_TRUSTED_VENDORS:-n}
       restart: always
       networks:
@@ -175,7 +179,7 @@ services:
             - phpfpm
 
     sogo-mailcow:
-      image: mailcow/sogo:1.106
+      image: mailcow/sogo:1.113
       environment:
         - DBNAME=${DBNAME}
         - DBUSER=${DBUSER}
@@ -223,7 +227,7 @@ services:
             - sogo
 
     dovecot-mailcow:
-      image: mailcow/dovecot:1.159
+      image: mailcow/dovecot:1.21
       depends_on:
         - mysql-mailcow
       dns:
@@ -309,7 +313,7 @@ services:
             - dovecot
 
     postfix-mailcow:
-      image: mailcow/postfix:1.66
+      image: mailcow/postfix:1.68
       depends_on:
         - mysql-mailcow
       volumes:
@@ -411,7 +415,7 @@ services:
     acme-mailcow:
       depends_on:
         - nginx-mailcow
-      image: mailcow/acme:1.81
+      image: mailcow/acme:1.83
       dns:
         - ${IPV4_NETWORK:-172.22.1}.254
       environment:
@@ -448,7 +452,7 @@ services:
             - acme
 
     netfilter-mailcow:
-      image: mailcow/netfilter:1.46
+      image: mailcow/netfilter:1.50
       stop_grace_period: 30s
       depends_on:
         - dovecot-mailcow
@@ -471,7 +475,7 @@ services:
         - /lib/modules:/lib/modules:ro
 
     watchdog-mailcow:
-      image: mailcow/watchdog:1.96
+      image: mailcow/watchdog:1.97
       dns:
         - ${IPV4_NETWORK:-172.22.1}.254
       tmpfs:
@@ -491,7 +495,7 @@ services:
         - DBPASS=${DBPASS}
         - DBROOT=${DBROOT}
         - USE_WATCHDOG=${USE_WATCHDOG:-n}
-        - WATCHDOG_NOTIFY_EMAIL=${WATCHDOG_NOTIFY_EMAIL}
+        - WATCHDOG_NOTIFY_EMAIL=${WATCHDOG_NOTIFY_EMAIL:-}
         - WATCHDOG_NOTIFY_BAN=${WATCHDOG_NOTIFY_BAN:-y}
         - WATCHDOG_SUBJECT=${WATCHDOG_SUBJECT:-Watchdog ALERT}
         - WATCHDOG_EXTERNAL_CHECKS=${WATCHDOG_EXTERNAL_CHECKS:-n}
@@ -534,7 +538,7 @@ services:
             - watchdog
 
     dockerapi-mailcow:
-      image: mailcow/dockerapi:1.41
+      image: mailcow/dockerapi:2.0
       security_opt:
         - label=disable
       restart: always
@@ -544,6 +548,8 @@ services:
       environment:
         - DBROOT=${DBROOT}
         - TZ=${TZ}
+        - REDIS_SLAVEOF_IP=${REDIS_SLAVEOF_IP:-}
+        - REDIS_SLAVEOF_PORT=${REDIS_SLAVEOF_PORT:-}
       volumes:
         - /var/run/docker.sock:/var/run/docker.sock:ro
       networks:
@@ -572,7 +578,7 @@ services:
             - solr
 
     olefy-mailcow:
-      image: mailcow/olefy:1.8.1
+      image: mailcow/olefy:1.11
       restart: always
       environment:
         - TZ=${TZ}
@@ -580,7 +586,7 @@ services:
         - OLEFY_BINDPORT=10055
         - OLEFY_TMPDIR=/tmp
         - OLEFY_PYTHON_PATH=/usr/bin/python3
-        - OLEFY_OLEVBA_PATH=/usr/bin/olevba3
+        - OLEFY_OLEVBA_PATH=/usr/bin/olevba
         - OLEFY_LOGLVL=20
         - OLEFY_MINLENGTH=500
         - OLEFY_DEL_TMP=1
@@ -664,3 +670,4 @@ volumes:
   crypt-vol-1:
   sogo-web-vol-1:
   sogo-userdata-backup-vol-1:
+  clamd-db-vol-1:
