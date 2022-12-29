@@ -75,7 +75,7 @@ services:
         - SKIP_CLAMD=${SKIP_CLAMD:-n}
       volumes:
         - ./data/conf/clamav/:/etc/clamav/:Z
-        - clamd-db-vol-1:/var/lib/clamav
+        - /data/docker/static_data/kurty_compose/mailcow/var/lib/clamav:/var/lib/clamav
       networks:
         mailcow-network:
           aliases:
