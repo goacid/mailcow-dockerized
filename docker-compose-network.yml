@@ -3,14 +3,14 @@ version: '2.4'
 networks:
   mailcow-network:
     driver: bridge
-    enable_ipv6: false
+    enable_ipv6: true
     ipam:
       driver: default
       config:
         - subnet: "172.22.1.0/24"
           gateway: "172.22.1.1"
-        - subnet: "2001:41d0:2:b951:11::/80"
-          gateway: "2001:41d0:2:b951:11::1"
+        - subnet: "2001:41d0:2:7d4f:11::/80"
+          gateway: "2001:41d0:2:7d4f:11::1"
     driver_opts:
       com.docker.network.bridge.name: 'mailcow-network'
       com.docker.network.bridge.enable_icc: "true" 
