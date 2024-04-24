@@ -251,7 +251,7 @@ function password_check($password1, $password2) {
 
   return true;
 }
-function last_login($action, $username, $sasl_limit_days = 7) {
+function last_login($action, $username, $sasl_limit_days = 7, $ui_offset = 1) {
   global $pdo;
   global $redis;
   $sasl_limit_days = intval($sasl_limit_days);
@@ -319,8 +319,11 @@ function last_login($action, $username, $sasl_limit_days = 7) {
         $stmt = $pdo->prepare('SELECT `remote`, `time` FROM `logs`
           WHERE JSON_EXTRACT(`call`, "$[0]") = "check_login"
             AND JSON_EXTRACT(`call`, "$[1]") = :username
-            AND `type` = "success" ORDER BY `time` DESC LIMIT 1 OFFSET 1');
-        $stmt->execute(array(':username' => $username));
+            AND `type` = "success" ORDER BY `time` DESC LIMIT 1 OFFSET :offset');
+        $stmt->execute(array(
+          ':username' => $username,
+          ':offset' => $ui_offset
+        ));
         $ui = $stmt->fetch(PDO::FETCH_ASSOC);
       }
       else {
@@ -523,8 +526,9 @@ function logger($_data = false) {
           ':remote' => get_remote_ip()
         ));
       }
-      catch (Exception $e) {
-        // Do nothing
+      catch (PDOException $e) {
+        # handle the exception here, as the exception handler function results in a white page
+        error_log($e->getMessage(), 0);
       }
     }
   }
@@ -830,11 +834,15 @@ function check_login($user, $pass, $app_passwd_data = false) {
   $stmt->execute(array(':user' => $user));
   $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
   foreach ($rows as $row) {
+    // verify password
     if (verify_hash($row['password'], $pass)) {
-      if (get_tfa($user)['name'] != "none") {
+      // check for tfa authenticators
+      $authenticators = get_tfa($user);
+      if (isset($authenticators['additional']) && is_array($authenticators['additional']) && count($authenticators['additional']) > 0) {
+        // active tfa authenticators found, set pending user login
         $_SESSION['pending_mailcow_cc_username'] = $user;
         $_SESSION['pending_mailcow_cc_role'] = "admin";
-        $_SESSION['pending_tfa_method'] = get_tfa($user)['name'];
+        $_SESSION['pending_tfa_methods'] = $authenticators['additional'];
         unset($_SESSION['ldelay']);
         $_SESSION['return'][] =  array(
           'type' => 'info',
@@ -842,8 +850,7 @@ function check_login($user, $pass, $app_passwd_data = false) {
           'msg' => 'awaiting_tfa_confirmation'
         );
         return "pending";
-      }
-      else {
+      } else {
         unset($_SESSION['ldelay']);
         // Reactivate TFA if it was set to "deactivate TFA for next login"
         $stmt = $pdo->prepare("UPDATE `tfa` SET `active`='1' WHERE `username` = :user");
@@ -866,11 +873,14 @@ function check_login($user, $pass, $app_passwd_data = false) {
   $stmt->execute(array(':user' => $user));
   $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
   foreach ($rows as $row) {
+    // verify password
     if (verify_hash($row['password'], $pass) !== false) {
-      if (get_tfa($user)['name'] != "none") {
+      // check for tfa authenticators
+      $authenticators = get_tfa($user);
+      if (isset($authenticators['additional']) && is_array($authenticators['additional']) && count($authenticators['additional']) > 0) {
         $_SESSION['pending_mailcow_cc_username'] = $user;
         $_SESSION['pending_mailcow_cc_role'] = "domainadmin";
-        $_SESSION['pending_tfa_method'] = get_tfa($user)['name'];
+        $_SESSION['pending_tfa_methods'] = $authenticators['additional'];
         unset($_SESSION['ldelay']);
         $_SESSION['return'][] =  array(
           'type' => 'info',
@@ -929,15 +939,37 @@ function check_login($user, $pass, $app_passwd_data = false) {
     $stmt->execute(array(':user' => $user));
     $rows = array_merge($rows, $stmt->fetchAll(PDO::FETCH_ASSOC));
   }
-  foreach ($rows as $row) {
+  foreach ($rows as $row) { 
+    // verify password
     if (verify_hash($row['password'], $pass) !== false) {
-      unset($_SESSION['ldelay']);
-      $_SESSION['return'][] =  array(
-        'type' => 'success',
-        'log' => array(__FUNCTION__, $user, '*'),
-        'msg' => array('logged_in_as', $user)
-      );
-      if ($app_passwd_data['eas'] === true || $app_passwd_data['dav'] === true) {
+      if (!array_key_exists("app_passwd_id", $row)){ 
+        // password is not a app password
+        // check for tfa authenticators
+        $authenticators = get_tfa($user);
+        if (isset($authenticators['additional']) && is_array($authenticators['additional']) && count($authenticators['additional']) > 0 &&
+            $app_passwd_data['eas'] !== true && $app_passwd_data['dav'] !== true) {
+          // authenticators found, init TFA flow
+          $_SESSION['pending_mailcow_cc_username'] = $user;
+          $_SESSION['pending_mailcow_cc_role'] = "user";
+          $_SESSION['pending_tfa_methods'] = $authenticators['additional'];
+          unset($_SESSION['ldelay']);
+          $_SESSION['return'][] =  array(
+            'type' => 'success',
+            'log' => array(__FUNCTION__, $user, '*'),
+            'msg' => array('logged_in_as', $user)
+          );
+          return "pending";
+        } else if (!isset($authenticators['additional']) || !is_array($authenticators['additional']) || count($authenticators['additional']) == 0) {
+          // no authenticators found, login successfull
+          // Reactivate TFA if it was set to "deactivate TFA for next login"
+          $stmt = $pdo->prepare("UPDATE `tfa` SET `active`='1' WHERE `username` = :user");
+          $stmt->execute(array(':user' => $user));
+
+          unset($_SESSION['ldelay']);
+          return "user";
+        }
+      } elseif ($app_passwd_data['eas'] === true || $app_passwd_data['dav'] === true) {
+        // password is a app password
         $service = ($app_passwd_data['eas'] === true) ? 'EAS' : 'DAV';
         $stmt = $pdo->prepare("REPLACE INTO sasl_log (`service`, `app_password`, `username`, `real_rip`) VALUES (:service, :app_id, :username, :remote_addr)");
         $stmt->execute(array(
@@ -946,8 +978,10 @@ function check_login($user, $pass, $app_passwd_data = false) {
           ':username' => $user,
           ':remote_addr' => ($_SERVER['HTTP_X_REAL_IP'] ?? $_SERVER['REMOTE_ADDR'])
         ));
+
+        unset($_SESSION['ldelay']);
+        return "user";
       }
-      return "user";
     }
   }
 
@@ -982,20 +1016,58 @@ function formatBytes($size, $precision = 2) {
   }
   return round(pow(1024, $base - floor($base)), $precision) . $suffixes[floor($base)];
 }
-function update_sogo_static_view() {
+function update_sogo_static_view($mailbox = null) {
   if (getenv('SKIP_SOGO') == "y") {
     return true;
   }
   global $pdo;
   global $lang;
-  $stmt = $pdo->query("SELECT 'OK' FROM INFORMATION_SCHEMA.TABLES
-    WHERE TABLE_NAME = 'sogo_view'");
-  $num_results = count($stmt->fetchAll(PDO::FETCH_ASSOC));
-  if ($num_results != 0) {
-    $stmt = $pdo->query("REPLACE INTO _sogo_static_view (`c_uid`, `domain`, `c_name`, `c_password`, `c_cn`, `mail`, `aliases`, `ad_aliases`, `ext_acl`, `kind`, `multiple_bookings`)
-      SELECT `c_uid`, `domain`, `c_name`, `c_password`, `c_cn`, `mail`, `aliases`, `ad_aliases`, `ext_acl`, `kind`, `multiple_bookings` from sogo_view");
-    $stmt = $pdo->query("DELETE FROM _sogo_static_view WHERE `c_uid` NOT IN (SELECT `username` FROM `mailbox` WHERE `active` = '1');");
+
+  $mailbox_exists = false;
+  if ($mailbox !== null) {
+    // Check if the mailbox exists
+    $stmt = $pdo->prepare("SELECT username FROM mailbox WHERE username = :mailbox AND active = '1'");
+    $stmt->execute(array(':mailbox' => $mailbox));
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);  
+    if ($row){
+      $mailbox_exists = true;
+    }
   }
+
+  $query = "REPLACE INTO _sogo_static_view (`c_uid`, `domain`, `c_name`, `c_password`, `c_cn`, `mail`, `aliases`, `ad_aliases`, `ext_acl`, `kind`, `multiple_bookings`)
+            SELECT
+              mailbox.username,
+              mailbox.domain,
+              mailbox.username,
+              IF(JSON_UNQUOTE(JSON_VALUE(attributes, '$.force_pw_update')) = '0',
+                 IF(JSON_UNQUOTE(JSON_VALUE(attributes, '$.sogo_access')) = 1, password, '{SSHA256}A123A123A321A321A321B321B321B123B123B321B432F123E321123123321321'),
+                 '{SSHA256}A123A123A321A321A321B321B321B123B123B321B432F123E321123123321321'),
+              mailbox.name,
+              mailbox.username,
+              IFNULL(GROUP_CONCAT(ga.aliases ORDER BY ga.aliases SEPARATOR ' '), ''),
+              IFNULL(gda.ad_alias, ''),
+              IFNULL(external_acl.send_as_acl, ''),
+              mailbox.kind,
+              mailbox.multiple_bookings
+            FROM
+              mailbox
+              LEFT OUTER JOIN grouped_mail_aliases ga ON ga.username REGEXP CONCAT('(^|,)', mailbox.username, '($|,)')
+              LEFT OUTER JOIN grouped_domain_alias_address gda ON gda.username = mailbox.username
+              LEFT OUTER JOIN grouped_sender_acl_external external_acl ON external_acl.username = mailbox.username
+            WHERE
+              mailbox.active = '1'";
+  
+  if ($mailbox_exists) {
+    $query .= " AND mailbox.username = :mailbox";
+    $stmt = $pdo->prepare($query);
+    $stmt->execute(array(':mailbox' => $mailbox));
+  } else {
+    $query .= " GROUP BY mailbox.username";
+    $stmt = $pdo->query($query);
+  }
+  
+  $stmt = $pdo->query("DELETE FROM _sogo_static_view WHERE `c_uid` NOT IN (SELECT `username` FROM `mailbox` WHERE `active` = '1');");
+  
   flush_memcached();
 }
 function edit_user_account($_data) {
@@ -1142,47 +1214,46 @@ function set_tfa($_data) {
   global $yubi;
   global $tfa;
   $_data_log = $_data;
+  $access_denied = null;
   !isset($_data_log['confirm_password']) ?: $_data_log['confirm_password'] = '*';
   $username = $_SESSION['mailcow_cc_username'];
-  if (!isset($_SESSION['mailcow_cc_role']) || empty($username)) {
-      $_SESSION['return'][] =  array(
-        'type' => 'danger',
-        'log' => array(__FUNCTION__, $_data_log),
-        'msg' => 'access_denied'
-      );
-      return false;
-  }
-  $stmt = $pdo->prepare("SELECT `password` FROM `admin`
-      WHERE `username` = :username");
-  $stmt->execute(array(':username' => $username));
-  $row = $stmt->fetch(PDO::FETCH_ASSOC);
-  $num_results = count($stmt->fetchAll(PDO::FETCH_ASSOC));
-  if (!empty($num_results)) {
-    if (!verify_hash($row['password'], $_data["confirm_password"])) {
-      $_SESSION['return'][] =  array(
-        'type' => 'danger',
-        'log' => array(__FUNCTION__, $_data_log),
-        'msg' => 'access_denied'
-      );
-      return false;
-    }
-  }
-  $stmt = $pdo->prepare("SELECT `password` FROM `mailbox`
-      WHERE `username` = :username");
-  $stmt->execute(array(':username' => $username));
-  $row = $stmt->fetch(PDO::FETCH_ASSOC);
-  $num_results = count($stmt->fetchAll(PDO::FETCH_ASSOC));
-  if (!empty($num_results)) {
-    if (!verify_hash($row['password'], $_data["confirm_password"])) {
-      $_SESSION['return'][] =  array(
-        'type' => 'danger',
-        'log' => array(__FUNCTION__, $_data_log),
-        'msg' => 'access_denied'
-      );
-      return false;
+
+  // check for empty user and role
+  if (!isset($_SESSION['mailcow_cc_role']) || empty($username)) $access_denied = true;
+
+  // check admin confirm password
+  if ($access_denied === null) {
+    $stmt = $pdo->prepare("SELECT `password` FROM `admin`
+        WHERE `username` = :username");
+    $stmt->execute(array(':username' => $username));
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    if ($row) {
+      if (!verify_hash($row['password'], $_data["confirm_password"])) $access_denied = true;
+      else $access_denied = false;
     }
   }
 
+  // check mailbox confirm password
+  if ($access_denied === null) {
+    $stmt = $pdo->prepare("SELECT `password` FROM `mailbox`
+        WHERE `username` = :username");
+    $stmt->execute(array(':username' => $username));
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    if ($row) {
+      if (!verify_hash($row['password'], $_data["confirm_password"])) $access_denied = true;
+      else $access_denied = false;
+    }
+  }
+
+  // set access_denied error
+  if ($access_denied){
+    $_SESSION['return'][] =  array(
+      'type' => 'danger',
+      'log' => array(__FUNCTION__, $_data_log),
+      'msg' => 'access_denied'
+    );
+    return false;
+  }
 
   switch ($_data["tfa_method"]) {
     case "yubi_otp":
@@ -1220,8 +1291,7 @@ function set_tfa($_data) {
         $yubico_modhex_id = substr($_data["otp_token"], 0, 12);
         $stmt = $pdo->prepare("DELETE FROM `tfa`
           WHERE `username` = :username
-            AND (`authmech` != 'yubi_otp')
-            OR (`authmech` = 'yubi_otp' AND `secret` LIKE :modhex)");
+            AND (`authmech` = 'yubi_otp' AND `secret` LIKE :modhex)");
         $stmt->execute(array(':username' => $username, ':modhex' => '%' . $yubico_modhex_id));
         $stmt = $pdo->prepare("INSERT INTO `tfa` (`key_id`, `username`, `authmech`, `active`, `secret`) VALUES
           (:key_id, :username, 'yubi_otp', '1', :secret)");
@@ -1264,9 +1334,6 @@ function set_tfa($_data) {
     break;
     case "webauthn":
         $key_id = (!isset($_data["key_id"])) ? 'unidentified' : $_data["key_id"];
-
-        $stmt = $pdo->prepare("DELETE FROM `tfa` WHERE `username` = :username AND `authmech` != 'webauthn'");
-        $stmt->execute(array(':username' => $username));
 
         $stmt = $pdo->prepare("INSERT INTO `tfa` (`username`, `key_id`, `authmech`, `keyHandle`, `publicKey`, `certificate`, `counter`, `active`)
         VALUES (?, ?, 'webauthn', ?, ?, ?, ?, '1')");
@@ -1439,25 +1506,27 @@ function unset_tfa_key($_data) {
   global $pdo;
   global $lang;
   $_data_log = $_data;
+  $access_denied = null;
   $id = intval($_data['unset_tfa_key']);
   $username = $_SESSION['mailcow_cc_username'];
-  if (!isset($_SESSION['mailcow_cc_role']) || empty($username)) {
-    $_SESSION['return'][] =  array(
-      'type' => 'danger',
-      'log' => array(__FUNCTION__, $_data_log),
-      'msg' => 'access_denied'
-    );
-    return false;
-  }
+
+  // check for empty user and role
+  if (!isset($_SESSION['mailcow_cc_role']) || empty($username)) $access_denied = true;
+
   try {
-    if (!is_numeric($id)) {
-      $_SESSION['return'][] =  array(
+    if (!is_numeric($id)) $access_denied = true;
+    
+    // set access_denied error
+    if ($access_denied){
+      $_SESSION['return'][] = array(
         'type' => 'danger',
         'log' => array(__FUNCTION__, $_data_log),
         'msg' => 'access_denied'
       );
       return false;
-    }
+    } 
+
+    // check if it's last key
     $stmt = $pdo->prepare("SELECT COUNT(*) AS `keys` FROM `tfa`
       WHERE `username` = :username AND `active` = '1'");
     $stmt->execute(array(':username' => $username));
@@ -1470,6 +1539,8 @@ function unset_tfa_key($_data) {
       );
       return false;
     }
+
+    // delete key
     $stmt = $pdo->prepare("DELETE FROM `tfa` WHERE `username` = :username AND `id` = :id");
     $stmt->execute(array(':username' => $username, ':id' => $id));
     $_SESSION['return'][] =  array(
@@ -1487,7 +1558,7 @@ function unset_tfa_key($_data) {
     return false;
   }
 }
-function get_tfa($username = null) {
+function get_tfa($username = null, $id = null) {
   global $pdo;
   if (isset($_SESSION['mailcow_cc_username'])) {
     $username = $_SESSION['mailcow_cc_username'];
@@ -1495,95 +1566,119 @@ function get_tfa($username = null) {
   elseif (empty($username)) {
     return false;
   }
-  $stmt = $pdo->prepare("SELECT * FROM `tfa`
-      WHERE `username` = :username AND `active` = '1'");
-  $stmt->execute(array(':username' => $username));
-  $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
-  if (isset($row["authmech"])) {
-    switch ($row["authmech"]) {
-      case "yubi_otp":
-        $data['name'] = "yubi_otp";
-        $data['pretty'] = "Yubico OTP";
-        $stmt = $pdo->prepare("SELECT `id`, `key_id`, RIGHT(`secret`, 12) AS 'modhex' FROM `tfa` WHERE `authmech` = 'yubi_otp' AND `username` = :username");
-        $stmt->execute(array(
-          ':username' => $username,
-        ));
-        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        while($row = array_shift($rows)) {
-          $data['additional'][] = $row;
+  if (!isset($id)){
+    // fetch all tfa methods - just get information about possible authenticators
+    $stmt = $pdo->prepare("SELECT `id`, `key_id`, `authmech` FROM `tfa`
+        WHERE `username` = :username AND `active` = '1'");
+    $stmt->execute(array(':username' => $username));
+    $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
+ 
+    // no tfa methods found
+    if (count($results) == 0) {
+        $data['name'] = 'none';
+        $data['pretty'] = "-";
+        $data['additional'] = array();
+        return $data;
+    }
+
+    $data['additional'] = $results;
+    return $data;
+  } else {
+    // fetch specific authenticator details by id
+    $stmt = $pdo->prepare("SELECT * FROM `tfa`
+    WHERE `username` = :username AND `id` = :id AND `active` = '1'");
+    $stmt->execute(array(':username' => $username, ':id' => $id));
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if (isset($row["authmech"])) {
+        switch ($row["authmech"]) {
+          case "yubi_otp":
+            $data['name'] = "yubi_otp";
+            $data['pretty'] = "Yubico OTP";
+            $stmt = $pdo->prepare("SELECT `id`, `key_id`, RIGHT(`secret`, 12) AS 'modhex' FROM `tfa` WHERE `authmech` = 'yubi_otp' AND `username` = :username AND `id` = :id");
+            $stmt->execute(array(
+              ':username' => $username,
+              ':id' => $id
+            ));
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            while($row = array_shift($rows)) {
+              $data['additional'][] = $row;
+            }
+            return $data;
+          break;
+          // u2f - deprecated, should be removed
+          case "u2f":
+            $data['name'] = "u2f";
+            $data['pretty'] = "Fido U2F";
+            $stmt = $pdo->prepare("SELECT `id`, `key_id` FROM `tfa` WHERE `authmech` = 'u2f' AND `username` = :username AND `id` = :id");
+            $stmt->execute(array(
+              ':username' => $username,
+              ':id' => $id
+            ));
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            while($row = array_shift($rows)) {
+              $data['additional'][] = $row;
+            }
+            return $data;
+          break;
+          case "hotp":
+            $data['name'] = "hotp";
+            $data['pretty'] = "HMAC-based OTP";
+            return $data;
+          break;
+          case "totp":
+            $data['name'] = "totp";
+            $data['pretty'] = "Time-based OTP";
+            $stmt = $pdo->prepare("SELECT `id`, `key_id`, `secret` FROM `tfa` WHERE `authmech` = 'totp' AND `username` = :username AND `id` = :id");
+            $stmt->execute(array(
+              ':username' => $username,
+              ':id' => $id
+            ));
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            while($row = array_shift($rows)) {
+              $data['additional'][] = $row;
+            }
+            return $data;
+          break;
+          case "webauthn":
+            $data['name'] = "webauthn";
+            $data['pretty'] = "WebAuthn";
+            $stmt = $pdo->prepare("SELECT `id`, `key_id` FROM `tfa` WHERE `authmech` = 'webauthn' AND `username` = :username AND `id` = :id");
+            $stmt->execute(array(
+              ':username' => $username,
+              ':id' => $id
+            ));
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            while($row = array_shift($rows)) {
+              $data['additional'][] = $row;
+            }
+            return $data;
+          break;
+          default:
+            $data['name'] = 'none';
+            $data['pretty'] = "-";
+            return $data;
+          break;
         }
-        return $data;
-      break;
-      // u2f - deprecated, should be removed
-      case "u2f":
-        $data['name'] = "u2f";
-        $data['pretty'] = "Fido U2F";
-        $stmt = $pdo->prepare("SELECT `id`, `key_id` FROM `tfa` WHERE `authmech` = 'u2f' AND `username` = :username");
-        $stmt->execute(array(
-          ':username' => $username,
-        ));
-        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        while($row = array_shift($rows)) {
-          $data['additional'][] = $row;
-        }
-        return $data;
-      break;
-      case "hotp":
-        $data['name'] = "hotp";
-        $data['pretty'] = "HMAC-based OTP";
-        return $data;
-      break;
-      case "totp":
-        $data['name'] = "totp";
-        $data['pretty'] = "Time-based OTP";
-        $stmt = $pdo->prepare("SELECT `id`, `key_id`, `secret` FROM `tfa` WHERE `authmech` = 'totp' AND `username` = :username");
-        $stmt->execute(array(
-          ':username' => $username,
-        ));
-        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        while($row = array_shift($rows)) {
-          $data['additional'][] = $row;
-        }
-        return $data;
-      break;
-      case "webauthn":
-        $data['name'] = "webauthn";
-        $data['pretty'] = "WebAuthn";
-        $stmt = $pdo->prepare("SELECT `id`, `key_id` FROM `tfa` WHERE `authmech` = 'webauthn' AND `username` = :username");
-        $stmt->execute(array(
-          ':username' => $username,
-        ));
-        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        while($row = array_shift($rows)) {
-          $data['additional'][] = $row;
-        }
-        return $data;
-      break;
-      default:
+      }
+      else {
         $data['name'] = 'none';
         $data['pretty'] = "-";
         return $data;
-      break;
+      }
     }
-  }
-  else {
-    $data['name'] = 'none';
-    $data['pretty'] = "-";
-    return $data;
-  }
 }
-function verify_tfa_login($username, $_data, $WebAuthn) {
-    global $pdo;
-    global $yubi;
-    global $u2f;
-    global $tfa;
-    $stmt = $pdo->prepare("SELECT `authmech` FROM `tfa`
-        WHERE `username` = :username AND `active` = '1'");
-    $stmt->execute(array(':username' => $username));
-    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+function verify_tfa_login($username, $_data) {
+  global $pdo;
+  global $yubi;
+  global $u2f;
+  global $tfa;
+  global $WebAuthn;
 
-    switch ($row["authmech"]) {
+  if ($_data['tfa_method'] != 'u2f'){
+
+    switch ($_data["tfa_method"]) {
         case "yubi_otp":
             if (!ctype_alnum($_data['token']) || strlen($_data['token']) != 44) {
                 $_SESSION['return'][] =  array(
@@ -1597,7 +1692,7 @@ function verify_tfa_login($username, $_data, $WebAuthn) {
             $stmt = $pdo->prepare("SELECT `id`, `secret` FROM `tfa`
                 WHERE `username` = :username
                 AND `authmech` = 'yubi_otp'
-                AND `active`='1'
+                AND `active` = '1'
                 AND `secret` LIKE :modhex");
             $stmt->execute(array(':username' => $username, ':modhex' => '%' . $yubico_modhex_id));
             $row = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -1632,15 +1727,16 @@ function verify_tfa_login($username, $_data, $WebAuthn) {
             return false;
         break;
         case "totp":
-            try {
+          try {
             $stmt = $pdo->prepare("SELECT `id`, `secret` FROM `tfa`
                 WHERE `username` = :username
                 AND `authmech` = 'totp'
+                AND `id` = :id
                 AND `active`='1'");
-            $stmt->execute(array(':username' => $username));
+            $stmt->execute(array(':username' => $username, ':id' => $_data['id']));
             $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
             foreach ($rows as $row) {
-                if ($tfa->verifyCode($row['secret'], $_data['token']) === true) {
+              if ($tfa->verifyCode($row['secret'], $_data['token']) === true) {
                 $_SESSION['tfa_id'] = $row['id'];
                 $_SESSION['return'][] =  array(
                     'type' => 'success',
@@ -1648,7 +1744,7 @@ function verify_tfa_login($username, $_data, $WebAuthn) {
                     'msg' => 'verified_totp_login'
                 );
                 return true;
-                }
+              }
             }
             $_SESSION['return'][] =  array(
                 'type' => 'danger',
@@ -1656,23 +1752,16 @@ function verify_tfa_login($username, $_data, $WebAuthn) {
                 'msg' => 'totp_verification_failed'
             );
             return false;
-            }
-            catch (PDOException $e) {
+          }
+          catch (PDOException $e) {
             $_SESSION['return'][] =  array(
                 'type' => 'danger',
                 'log' => array(__FUNCTION__, $username, '*'),
                 'msg' => array('mysql_error', $e)
             );
             return false;
-            }
+          }
         break;
-        // u2f - deprecated, should be removed
-        case "u2f":
-            // delete old keys that used u2f
-            $stmt = $pdo->prepare("DELETE FROM `tfa` WHERE `authmech` = :authmech AND `username` = :username");
-            $stmt->execute(array(':authmech' => 'u2f', ':username' => $username));
-
-            return true;
         case "webauthn":
             $tokenData = json_decode($_data['token']);
             $clientDataJSON = base64_decode($tokenData->clientDataJSON);
@@ -1681,20 +1770,37 @@ function verify_tfa_login($username, $_data, $WebAuthn) {
             $id = base64_decode($tokenData->id);
             $challenge = $_SESSION['challenge'];
 
-            $stmt = $pdo->prepare("SELECT `key_id`, `keyHandle`, `username`, `publicKey` FROM `tfa` WHERE `keyHandle` = :tokenId");
-            $stmt->execute(array(':tokenId' => $tokenData->id));
+            $stmt = $pdo->prepare("SELECT `id`, `key_id`, `keyHandle`, `username`, `publicKey` FROM `tfa` WHERE `id` = :id AND `active`='1'");
+            $stmt->execute(array(':id' => $_data['id']));
             $process_webauthn = $stmt->fetch(PDO::FETCH_ASSOC);
 
-            if (empty($process_webauthn) || empty($process_webauthn['publicKey']) || empty($process_webauthn['username'])) return false;
+            if (empty($process_webauthn)){
+              $_SESSION['return'][] =  array(
+                  'type' => 'danger',
+                  'log' => array(__FUNCTION__, $username, '*'),
+                  'msg' => array('webauthn_authenticator_failed')
+              );
+              return false;
+            } 
             
-            if ($process_webauthn['publicKey'] === false) {
+            if (empty($process_webauthn['publicKey']) || $process_webauthn['publicKey'] === false) {
                 $_SESSION['return'][] =  array(
                     'type' => 'danger',
                     'log' => array(__FUNCTION__, $username, '*'),
-                    'msg' => array('webauthn_verification_failed', 'publicKey not found')
+                    'msg' => array('webauthn_publickey_failed')
                 );
                 return false;
             }
+
+            if ($process_webauthn['username'] != $_SESSION['pending_mailcow_cc_username']){
+              $_SESSION['return'][] =  array(
+                  'type' => 'danger',
+                  'log' => array(__FUNCTION__, $username, '*'),
+                  'msg' => array('webauthn_username_failed')
+              );
+              return false;
+            }
+
             try {
                 $WebAuthn->processGet($clientDataJSON, $authenticatorData, $signature, $process_webauthn['publicKey'], $challenge, null, $GLOBALS['WEBAUTHN_UV_FLAG_LOGIN'], $GLOBALS['WEBAUTHN_USER_PRESENT_FLAG']);
             }
@@ -1707,38 +1813,33 @@ function verify_tfa_login($username, $_data, $WebAuthn) {
                 return false;
             }
 
-            
             $stmt = $pdo->prepare("SELECT `superadmin` FROM `admin` WHERE `username` = :username");
             $stmt->execute(array(':username' => $process_webauthn['username']));
             $obj_props = $stmt->fetch(PDO::FETCH_ASSOC);
             if ($obj_props['superadmin'] === 1) {
-                $_SESSION["mailcow_cc_role"] = "admin";
+              $_SESSION["mailcow_cc_role"] = "admin";
             }
             elseif ($obj_props['superadmin'] === 0) {
-                $_SESSION["mailcow_cc_role"] = "domainadmin";
+              $_SESSION["mailcow_cc_role"] = "domainadmin";
             }
             else {
-                $stmt = $pdo->prepare("SELECT `username` FROM `mailbox` WHERE `username` = :username");
-                $stmt->execute(array(':username' => $process_webauthn['username']));
-                $row = $stmt->fetch(PDO::FETCH_ASSOC);
-                if ($row['username'] == $process_webauthn['username']) {
+              $stmt = $pdo->prepare("SELECT `username` FROM `mailbox` WHERE `username` = :username");
+              $stmt->execute(array(':username' => $process_webauthn['username']));
+              $row = $stmt->fetch(PDO::FETCH_ASSOC);
+              if (!empty($row['username'])) {
                 $_SESSION["mailcow_cc_role"] = "user";
-                }
-            }
-
-        
-            if ($process_webauthn['username'] != $_SESSION['pending_mailcow_cc_username']){
+              } else {
                 $_SESSION['return'][] =  array(
-                    'type' => 'danger',
-                    'log' => array(__FUNCTION__, $username, '*'),
-                    'msg' => array('webauthn_verification_failed', 'user who requests does not match with sql entry')
+                  'type' => 'danger',
+                  'log' => array(__FUNCTION__, $username, '*'),
+                  'msg' => array('webauthn_role_failed')
                 );
                 return false;
+              }
             }
 
-
             $_SESSION["mailcow_cc_username"] = $process_webauthn['username'];
-            $_SESSION['tfa_id'] = $process_webauthn['key_id'];
+            $_SESSION['tfa_id'] = $process_webauthn['id'];
             $_SESSION['authReq'] = null;
             unset($_SESSION["challenge"]);
             $_SESSION['return'][] =  array(
@@ -1759,6 +1860,17 @@ function verify_tfa_login($username, $_data, $WebAuthn) {
     }
 
     return false;
+  } else {
+    // delete old keys that used u2f
+    $stmt = $pdo->prepare("SELECT * FROM `tfa` WHERE `authmech` = 'u2f' AND `username` = :username");
+    $stmt->execute(array(':username' => $username));
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    if (count($rows) == 0) return false;
+
+    $stmt = $pdo->prepare("DELETE FROM `tfa` WHERE `authmech` = 'u2f' AND `username` = :username");
+    $stmt->execute(array(':username' => $username));
+    return true;
+  }
 }
 function admin_api($access, $action, $data = null) {
   global $pdo;
@@ -2019,6 +2131,135 @@ function rspamd_ui($action, $data = null) {
       }
     break;
   }
+}
+function cors($action, $data = null) {
+  global $redis;
+
+  switch ($action) {
+    case "edit":
+      if ($_SESSION['mailcow_cc_role'] != "admin") {
+        $_SESSION['return'][] =  array(
+          'type' => 'danger',
+          'log' => array(__FUNCTION__, $action, $data),
+          'msg' => 'access_denied'
+        );
+        return false;
+      }    
+
+      $allowed_origins = isset($data['allowed_origins']) ? $data['allowed_origins'] : array($_SERVER['SERVER_NAME']);
+      $allowed_origins = !is_array($allowed_origins) ? array_filter(array_map('trim', explode("\n", $allowed_origins))) : $allowed_origins;
+      foreach ($allowed_origins as $origin) {
+        if (!filter_var($origin, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) && $origin != '*') {
+          $_SESSION['return'][] = array(
+            'type' => 'danger',
+            'log' => array(__FUNCTION__, $action, $data),
+            'msg' => 'cors_invalid_origin'
+          );
+          return false;
+        }
+      }
+
+      $allowed_methods = isset($data['allowed_methods']) ? $data['allowed_methods'] : array('GET', 'POST', 'PUT', 'DELETE');
+      $allowed_methods  = !is_array($allowed_methods) ? array_map('trim', preg_split( "/( |,|;|\n)/", $allowed_methods)) : $allowed_methods;
+      $available_methods = array('GET', 'POST', 'PUT', 'DELETE');
+      foreach ($allowed_methods as $method) {
+        if (!in_array($method, $available_methods)) {
+          $_SESSION['return'][] = array(
+            'type' => 'danger',
+            'log' => array(__FUNCTION__, $action, $data),
+            'msg' => 'cors_invalid_method'
+          );
+          return false;
+        }
+      }
+
+      try {
+        $redis->hMSet('CORS_SETTINGS', array(
+          'allowed_origins' => implode(', ', $allowed_origins),
+          'allowed_methods' => implode(', ', $allowed_methods)
+        ));   
+      } catch (RedisException $e) {
+        $_SESSION['return'][] = array(
+          'type' => 'danger',
+          'log' => array(__FUNCTION__, $action, $data),
+          'msg' => array('redis_error', $e)
+        );
+        return false;
+      }
+
+      $_SESSION['return'][] = array(
+        'type' => 'success',
+        'log' => array(__FUNCTION__, $action, $data),
+        'msg' => 'cors_headers_edited'
+      );
+      return true;
+    break;
+    case "get":
+      try {
+        $cors_settings                  = $redis->hMGet('CORS_SETTINGS', array('allowed_origins', 'allowed_methods'));
+      } catch (RedisException $e) {
+        $_SESSION['return'][] = array(
+          'type' => 'danger',
+          'log' => array(__FUNCTION__, $action, $data),
+          'msg' => array('redis_error', $e)
+        );
+      }
+
+      $cors_settings                    = !$cors_settings ? array('allowed_origins' => $_SERVER['SERVER_NAME'], 'allowed_methods' => 'GET, POST, PUT, DELETE') : $cors_settings;
+      $cors_settings['allowed_origins'] = empty($cors_settings['allowed_origins']) ? $_SERVER['SERVER_NAME'] : $cors_settings['allowed_origins'];
+      $cors_settings['allowed_methods'] = empty($cors_settings['allowed_methods']) ? 'GET, POST, PUT, DELETE, OPTION' : $cors_settings['allowed_methods'];
+
+      return $cors_settings;
+    break;
+    case "set_headers":
+      $cors_settings = cors('get');
+      // check if requested origin is in allowed origins
+      $allowed_origins = explode(', ', $cors_settings['allowed_origins']);
+      $cors_settings['allowed_origins'] = $allowed_origins[0];
+      if (in_array('*', $allowed_origins)){
+        $cors_settings['allowed_origins'] = '*';
+      } else if (in_array($_SERVER['HTTP_ORIGIN'], $allowed_origins)) {
+        $cors_settings['allowed_origins'] = $_SERVER['HTTP_ORIGIN'];
+      }
+      // always allow OPTIONS for preflight request
+      $cors_settings["allowed_methods"] = empty($cors_settings["allowed_methods"]) ? 'OPTIONS' : $cors_settings["allowed_methods"] . ', ' . 'OPTIONS';
+
+      header('Access-Control-Allow-Origin: ' . $cors_settings['allowed_origins']);
+      header('Access-Control-Allow-Methods: '. $cors_settings['allowed_methods']);
+      header('Access-Control-Allow-Headers: Accept, Content-Type, X-Api-Key, Origin');
+
+      // Access-Control settings requested, this is just a preflight request
+      if ($_SERVER['REQUEST_METHOD'] == 'OPTIONS' && 
+        isset($_SERVER['HTTP_ACCESS_CONTROL_REQUEST_METHOD']) &&
+        isset($_SERVER['HTTP_ACCESS_CONTROL_REQUEST_HEADERS'])) {
+  
+        $allowed_methods = explode(', ', $cors_settings["allowed_methods"]);
+        if (in_array($_SERVER['HTTP_ACCESS_CONTROL_REQUEST_METHOD'], $allowed_methods, true))
+          // method allowed send 200 OK
+          http_response_code(200);
+        else
+          // method not allowed send 405 METHOD NOT ALLOWED
+          http_response_code(405);
+
+        exit;
+      }
+    break;
+  }
+}
+function getBaseURL() {
+  $protocol = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http';
+  $host = $_SERVER['HTTP_HOST'];
+  $base_url = $protocol . '://' . $host;
+
+  return $base_url;
+}
+function uuid4() {
+  $data = openssl_random_pseudo_bytes(16);
+
+  $data[6] = chr(ord($data[6]) & 0x0f | 0x40);
+  $data[8] = chr(ord($data[8]) & 0x3f | 0x80);
+
+  return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($data), 4));
 }
 
 function get_logs($application, $lines = false) {
